@@ -1,0 +1,6 @@
+For Next Day Run This Command 
+
+#1 Open docker 1st
+#2 cd basic-coin-prediction-node
+#3 sudo docker compose up -d
+#4 docker ps
