@@ -1,0 +1,185 @@
+1.1 If Node Is down, then run this command : cd basic-coin-prediction-node
+___________
+#2 Make your docker compose services down: docker-compose down
+___________
+#3 Clean up your old containers
+3.1 docker stop $(docker ps -aq) 2>/dev/null
+3.2 docker rm $(docker ps -aq) 2>/dev/null
+3.3 docker rmi -f $(docker images -aq) 2>/dev/null
+___________
+#4 Steps to upgrade ur RPC to tesnet1:
+4.1 If u didn’t save head id previous then get head id 1st : cat head-data/keys/identity
+
+
+4.2 rm -rf docker-compose.yml && nano docker-compose.yml
+4.3 Fill the file with below details: Don’t forget to add ur Wallet phrase keys and Head id
+
+version: '3'
+
+services:
+  inference:
+    container_name: inference-basic-eth-pred
+    build:
+      context: .
+    command: python -u /app/app.py
+    ports:
+      - "8000:8000"
+    networks:
+      eth-model-local:
+        aliases:
+          - inference
+        ipv4_address: 172.22.0.4
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/inference/ETH"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+    volumes:
+      - ./inference-data:/app/data
+
+  updater:
+    container_name: updater-basic-eth-pred
+    build: .
+    environment:
+      - INFERENCE_API_ADDRESS=http://inference:8000
+    command: >
+      sh -c "
+      while true; do
+        python -u /app/update_app.py;
+        sleep 24h;
+      done
+      "
+    depends_on:
+      inference:
+        condition: service_healthy
+    networks:
+      eth-model-local:
+        aliases:
+          - updater
+        ipv4_address: 172.22.0.5
+
+  worker:
+    container_name: worker-basic-eth-pred
+    environment:
+      - INFERENCE_API_ADDRESS=http://inference:8000
+      - HOME=/data
+    build:
+      context: .
+      dockerfile: Dockerfile_b7s
+    entrypoint:
+      - "/bin/bash"
+      - "-c"
+      - |
+        if [ ! -f /data/keys/priv.bin ]; then
+          echo "Generating new private keys..."
+          mkdir -p /data/keys
+          cd /data/keys
+          allora-keys
+        fi
+        # Change boot-nodes below to the key advertised by your head
+        allora-node --role=worker --peer-db=/data/peerdb --function-db=/data/function-db \
+          --runtime-path=/app/runtime --runtime-cli=bls-runtime --workspace=/data/workspace \
+          --private-key=/data/keys/priv.bin --log-level=debug --port=9011 \
+          --boot-nodes=/ip4/172.22.0.100/tcp/9010/p2p/head-id \
+          --topic=allora-topic-1-worker \
+          --allora-chain-key-name=testkey \
+          --allora-chain-restore-mnemonic='WALLET_SEED_PHRASE' \
+          --allora-node-rpc-address=https://allora-rpc.testnet-1.testnet.allora.network/ \
+          --allora-chain-topic-id=1
+    volumes:
+      - ./worker-data:/data
+    working_dir: /data
+    depends_on:
+      - inference
+      - head
+    networks:
+      eth-model-local:
+        aliases:
+          - worker
+        ipv4_address: 172.22.0.10
+
+  head:
+    container_name: head-basic-eth-pred
+    image: alloranetwork/allora-inference-base-head:latest
+    environment:
+      - HOME=/data
+    entrypoint:
+      - "/bin/bash"
+      - "-c"
+      - |
+        if [ ! -f /data/keys/priv.bin ]; then
+          echo "Generating new private keys..."
+          mkdir -p /data/keys
+          cd /data/keys
+          allora-keys
+        fi
+        allora-node --role=head --peer-db=/data/peerdb --function-db=/data/function-db  \
+          --runtime-path=/app/runtime --runtime-cli=bls-runtime --workspace=/data/workspace \
+          --private-key=/data/keys/priv.bin --log-level=debug --port=9010 --rest-api=:6000
+    ports:
+      - "6000:6000"
+    volumes:
+      - ./head-data:/data
+    working_dir: /data
+    networks:
+      eth-model-local:
+        aliases:
+          - head
+        ipv4_address: 172.22.0.100
+
+
+networks:
+  eth-model-local:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/24
+
+volumes:
+  inference-data:
+  worker-data:
+  head-data:
+___________
+#5 Add new chain & take faucet:
+5.1 Add Chain: https://explorer.testnet-1.testnet.allora.network/
+5.2 Take Faucet: https://faucet.testnet-1.testnet.allora.network/
+___________
+#6 Make your docker compose services build & up (After Faucet recieve do these tasks)
+6.1 sudo docker compose build
+6.2 docker compose up -d
+___________
+#7 Check ur all containers (4/4) + Copy container id : docker ps
+___________
+#8 Check your worker logs and test the inferences using curl
+WORKER_CONTAINER_ID=$(docker ps -q — filter “ancestor=basic-coin-prediction-node-worker”)
+docker logs -f $WORKER_CONTAINER_ID
+NOTE: Change the $container id with ur actual container id.
+___________
+#9 If 200 Code , Then your node working fine & pts will update in 2–7 days 
+network_height=$(curl -s -X 'GET' 'https://allora-rpc.testnet-1.testnet.allora.network/abci_info?' -H 'accept: application/json' | jq -r .result.response.last_block_height) && \
+curl --location 'http://localhost:6000/api/v1/functions/execute' --header 'Content-Type: application/json' --data '{
+    "function_id": "bafybeigpiwl3o73zvvl6dxdqu7zqcub5mhg65jiky2xqb4rdhfmikswzqm",
+    "method": "allora-inference-function.wasm",
+    "parameters": null,
+    "topic": "1",
+    "config": {
+        "env_vars": [
+            {
+                "name": "BLS_REQUEST_PATH",
+                "value": "/api"
+            },
+            {
+                "name": "ALLORA_ARG_PARAMS",
+                "value": "ETH"
+            },
+            {
+                "name": "ALLORA_BLOCK_HEIGHT_CURRENT",
+                "value": "'"${network_height}"'"
+            }
+        ],
+        "number_of_nodes": -1,
+        "timeout": 10
+    }
+}' | jq
+
+# Change network height with latest block,Check here: https://explorer.testnet-1.testnet.allora.network/allora-testnet-1/block
